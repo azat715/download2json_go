@@ -1,8 +1,8 @@
 package utils
 
 import (
+	l "download2json/internal/logger"
 	"io"
-	"log"
 	"net/http"
 	"os"
 )
@@ -25,7 +25,7 @@ func Create_folder(folder string) {
 	if os.IsNotExist(err) {
 		errDir := os.MkdirAll(folder, 0755)
 		if errDir != nil {
-			log.Fatal(err)
+			l.ErrorLogger.Fatalln(err)
 		}
 	}
 }
