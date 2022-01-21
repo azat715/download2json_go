@@ -12,9 +12,7 @@ const PHOTOS_URL string = "https://jsonplaceholder.typicode.com/photos/"
 
 func main() {
 	l.GeneralLogger.Println("Началось скачивание")
-	go core.Get_albums(ALBUM_URL)
-	go core.Get_photos(PHOTOS_URL)
 	utils.Create_folder(FOLDER)
-	core.Worker_poll(FOLDER)
+	core.DownloadAll(ALBUM_URL, PHOTOS_URL, FOLDER)
 	l.GeneralLogger.Println("Закончилось скачивание")
 }
