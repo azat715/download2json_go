@@ -9,6 +9,24 @@ import (
 	"sync"
 )
 
+type Result struct {
+	albums map[int]models.Album
+	photos []models.Photo
+	err    error
+}
+
+type Executor interface {
+	Execute(url string, result chan Result)
+}
+
+type AlbumStrategy struct{}
+
+func (AlbumStrategy) Execute(url string, result chan Result) {
+
+}
+
+// func (s Executor)
+
 var albumsc = make(chan map[int]models.Album)
 var photosc = make(chan []models.Photo)
 
