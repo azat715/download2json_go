@@ -1,18 +1,23 @@
 package core
 
 import (
+	"context"
 	l "download2json/internal/logger"
 	"download2json/internal/models"
 	"download2json/internal/utils"
+	"download2json/internal/wpool"
+	"fmt"
 	"io/ioutil"
-	"path/filepath"
-	"sync"
 )
 
+const workerCount int = 100
+
 type Result struct {
-	albums map[int]models.Album
-	photos []models.Photo
-	err    error
+	data interface{}
+}
+
+type Problem interface {
+	Get_Task() Task
 }
 
 type Task struct {
@@ -22,124 +27,128 @@ type Task struct {
 }
 
 type Executor interface {
-	Execute(task Task, result chan []Result)
+	Execute(task Task) (Result, error)
 }
 
 type AlbumStrategy struct{} // конкретная стратегия альбомы
 
-func (AlbumStrategy) Execute(task Task, result chan []Result) {
-	var res []Result
+func (AlbumStrategy) Execute(task Task) (Result, error) {
 	body, _ := utils.Get(task.url)
 	var album models.Album
 	albums, err := album.Serialize(body)
 	if err != nil {
-		result <- append(res, Result{err: err})
+		return Result{}, err
 	}
 	var m map[int]models.Album
 	m = make(map[int]models.Album)
 	for _, i := range albums {
 		m[i.Id] = i
 	}
-	result <- append(res, Result{albums: m})
+	return Result{data: m}, nil
 }
 
 type PhotoStrategy struct{} // конкретная стратегия photos
 
-func (PhotoStrategy) Execute(task Task, result chan []Result) {
-	var res []Result
+func (PhotoStrategy) Execute(task Task) (Result, error) {
 	body, _ := utils.Get(task.url)
 	var photo models.Photo
 	photos, err := photo.Serialize(body)
 	if err != nil {
-		result <- append(res, Result{err: err})
+		return Result{}, err
 	}
-	result <- append(res, Result{photos: photos})
-	l.GeneralLogger.Println("Закончилосб скачивание альбомов")
+	return Result{data: photos}, nil
 }
 
 type PhotoBinStrategy struct{}
 
-func (PhotoBinStrategy) Execute(task Task, result chan []Result) {
-	var res []Result
+func (PhotoBinStrategy) Execute(task Task) (Result, error) {
 	body, errDownload := utils.Get(task.url)
 	if errDownload != nil {
-		result <- append(res, Result{err: errDownload})
-		l.GeneralLogger.Printf("Ошибка %v\n", errDownload)
+		return Result{}, errDownload
 	}
 	utils.Create_folder(task.album_folder_name)
 	errWrite := ioutil.WriteFile(task.photo_path, body, 0644)
 	if errWrite != nil {
-		result <- append(res, Result{err: errWrite})
-		l.GeneralLogger.Printf("Ошибка %v\n", errWrite)
+		return Result{}, errDownload
 	}
+	return Result{data: "Загрузка завершена"}, nil
 }
 
 type Context struct {
 	Executor
 }
 
-func (c *Context) Download(task Task, result chan []Result) {
-	c.Execute(task, result)
-}
-
-func Get_albums(url string, res chan []Result) {
-	l.GeneralLogger.Println("Началось скачивание альбомов")
-	c := Context{AlbumStrategy{}}
-	task := Task{url: url}
-	c.Download(task, res)
-}
-
-func Get_photos(url string, res chan []Result) {
-	l.GeneralLogger.Println("Началось скачивание фоток")
-	c := Context{PhotoStrategy{}}
-	task := Task{url: url}
-	c.Download(task, res)
-
+func (c *Context) Download(task Task) (Result, error) {
+	return c.Execute(task)
 }
 
 func DownloadAll(album_url string, photos_url string, folder string) {
+	wp := wpool.New(workerCount)
 
-	var albumsCh = make(chan []Result)
-	var photosCh = make(chan []Result)
-	go Get_albums(album_url, albumsCh)
-	go Get_photos(photos_url, photosCh)
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
 
-	workerPoolSize := 100
-	jobCh := make(chan Task, workerPoolSize)
-	results := make(chan []Result, workerPoolSize)
+	go wp.GenerateFrom(testJobs())
 
-	var wg sync.WaitGroup
-	for i := 0; i < workerPoolSize; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	go wp.Run(ctx)
 
-			for task := range jobCh {
-				l.GeneralLogger.Println("Началось скачивание фото")
-				c := Context{PhotoBinStrategy{}}
-				c.Download(task, results)
+	for {
+		select {
+		case r, ok := <-wp.Results():
+			if !ok {
+				continue
 			}
-		}()
-	}
-	albumsRes := <-albumsCh
-	photosRes := <-photosCh
-	photos := albumsRes[0]
-	albums := photosRes[0]
-	for _, photo := range photos.photos {
-		album := albums.albums[photo.Albumid]
-		album_folder_name := filepath.Join(folder, album.Title)
-		task := Task{
-			album_folder_name: album_folder_name,
-			photo_path:        filepath.Join(album_folder_name, photo.Title+".png"),
-			url:               photo.Url,
+			fmt.Println(r)
+		case <-wp.Done:
+			return
+		default:
 		}
-		jobCh <- task
 	}
-	results2 := <-results
-	for res := range results2 {
-		l.ErrorLogger.Printf("Ошибка %v\n", res)
+
+}
+
+var TestValue wpool.ExecutionFn = func(ctx context.Context, args interface{}) (interface{}, error) {
+	l.GeneralLogger.Println("Началось скачивание альбомов")
+	c := Context{AlbumStrategy{}}
+	task := Task{url: args}
+	return c.Download(task)
+}
+
+func Get_album(ctx context.Context, args string) (Result, error) {
+	l.GeneralLogger.Println("Началось скачивание альбомов")
+	c := Context{AlbumStrategy{}}
+	task := Task{url: args}
+	return c.Download(task)
+}
+
+func Get_photos(ctx context.Context, args string) (Result, error) {
+	l.GeneralLogger.Println("Началось скачивание фоток")
+	c := Context{PhotoStrategy{}}
+	task := Task{url: args}
+	return c.Download(task)
+}
+
+func testJobs() []wpool.Job {
+	jobs := make([]wpool.Job, 2)
+	ctx := context.Background()
+
+	jobs[0] = wpool.Job{
+		Descriptor: wpool.JobDescriptor{
+			ID:       wpool.JobID(fmt.Sprintf("%v", 0)),
+			JType:    "Album",
+			Metadata: nil,
+		},
+		ExecFn: wpool.ExecutionFn(Get_album),
+		Args:   "https://jsonplaceholder.typicode.com/albums/",
 	}
-	wg.Wait()
-	close(jobCh)
-	close(results)
+	jobs[1] = wpool.Job{
+		Descriptor: wpool.JobDescriptor{
+			ID:       wpool.JobID(fmt.Sprintf("%v", 0)),
+			JType:    "Photo",
+			Metadata: nil,
+		},
+		ExecFn: Get_photos,
+		Args:   "https://jsonplaceholder.typicode.com/photos/",
+	}
+	return jobs
 }
