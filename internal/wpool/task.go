@@ -6,18 +6,17 @@ import (
 
 type JobID string
 type jobType string
-type jobMetadata map[string]interface{}
 
-type ExecutionFn func(ctx context.Context, args interface{}) (interface{}, error)
+type ExecutionFn func(url string) ([]byte, error)
 
 type JobDescriptor struct {
 	ID       JobID
 	JType    jobType
-	Metadata map[string]interface{}
+	Metadata map[string]string
 }
 
 type Result struct {
-	Value      interface{}
+	Value      []byte
 	Err        error
 	Descriptor JobDescriptor
 }
@@ -25,11 +24,11 @@ type Result struct {
 type Job struct {
 	Descriptor JobDescriptor
 	ExecFn     ExecutionFn
-	Args       interface{}
+	Args       string
 }
 
 func (j Job) execute(ctx context.Context) Result {
-	value, err := j.ExecFn(ctx, j.Args)
+	value, err := j.ExecFn(j.Args)
 	if err != nil {
 		return Result{
 			Err:        err,

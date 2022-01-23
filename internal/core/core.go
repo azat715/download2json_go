@@ -4,91 +4,118 @@ import (
 	"context"
 	l "download2json/internal/logger"
 	"download2json/internal/models"
-	"download2json/internal/utils"
 	"download2json/internal/wpool"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 )
 
-const workerCount int = 100
-
 type Result struct {
-	data interface{}
+	albums []models.Album
+	photos []models.Photo
 }
 
-type Problem interface {
-	Get_Task() Task
+func Create_folder(folder string) {
+	_, err := os.Stat(folder)
+	if os.IsNotExist(err) {
+		errDir := os.MkdirAll(folder, 0755)
+		if errDir != nil {
+			l.ErrorLogger.Fatalln(err)
+		}
+	}
 }
 
-type Task struct {
-	photo_path        string
-	album_folder_name string
-	url               string
-}
-
-type Executor interface {
-	Execute(task Task) (Result, error)
-}
-
-type AlbumStrategy struct{} // конкретная стратегия альбомы
-
-func (AlbumStrategy) Execute(task Task) (Result, error) {
-	body, _ := utils.Get(task.url)
-	var album models.Album
-	albums, err := album.Serialize(body)
+func Get(url string) ([]byte, error) {
+	resp, err := http.Get(url)
 	if err != nil {
-		return Result{}, err
+		return nil, err
 	}
-	var m map[int]models.Album
-	m = make(map[int]models.Album)
-	for _, i := range albums {
-		m[i.Id] = i
-	}
-	return Result{data: m}, nil
-}
-
-type PhotoStrategy struct{} // конкретная стратегия photos
-
-func (PhotoStrategy) Execute(task Task) (Result, error) {
-	body, _ := utils.Get(task.url)
-	var photo models.Photo
-	photos, err := photo.Serialize(body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return Result{}, err
+		return nil, err
 	}
-	return Result{data: photos}, nil
+	defer resp.Body.Close()
+	return body, nil
 }
 
-type PhotoBinStrategy struct{}
+const workerCount int = 100
+const jobsCount int = 100
 
-func (PhotoBinStrategy) Execute(task Task) (Result, error) {
-	body, errDownload := utils.Get(task.url)
-	if errDownload != nil {
-		return Result{}, errDownload
-	}
-	utils.Create_folder(task.album_folder_name)
-	errWrite := ioutil.WriteFile(task.photo_path, body, 0644)
-	if errWrite != nil {
-		return Result{}, errDownload
-	}
-	return Result{data: "Загрузка завершена"}, nil
-}
-
-type Context struct {
-	Executor
-}
-
-func (c *Context) Download(task Task) (Result, error) {
-	return c.Execute(task)
-}
-
-func DownloadAll(album_url string, photos_url string, folder string) {
+func DownloadJson(album_url string, photo_url string) Result {
 	wp := wpool.New(workerCount)
 
 	ctx, cancel := context.WithCancel(context.TODO())
 	defer cancel()
 
-	go wp.GenerateFrom(testJobs())
+	jobs := make([]wpool.Job, 2)
+	jobs[0] = wpool.Job{
+		Descriptor: wpool.JobDescriptor{
+			ID:       wpool.JobID(fmt.Sprintf("%v", 0)),
+			JType:    "Album",
+			Metadata: nil,
+		},
+		ExecFn: Get,
+		Args:   album_url,
+	}
+	jobs[1] = wpool.Job{
+		Descriptor: wpool.JobDescriptor{
+			ID:       wpool.JobID(fmt.Sprintf("%v", 1)),
+			JType:    "Photo",
+			Metadata: nil,
+		},
+		ExecFn: Get,
+		Args:   photo_url,
+	}
+
+	go wp.GenerateFrom(jobs)
+
+	go wp.Run(ctx)
+
+	res := new(Result)
+
+	for {
+		select {
+		case r, ok := <-wp.Results():
+			if !ok {
+				continue
+			}
+			if r.Descriptor.JType == "Album" {
+				var album models.Album
+				albums, err := album.Serialize(r.Value)
+				if err != nil {
+					l.ErrorLogger.Panicln("Ошибка при сериализации альбомов")
+				}
+				l.GeneralLogger.Print("закончилось скачивание альбомов")
+				res.albums = albums
+			}
+			if r.Descriptor.JType == "Photo" {
+				var photo models.Photo
+				photos, err := photo.Serialize(r.Value)
+				if err != nil {
+					l.ErrorLogger.Panicln("Ошибка при сериализации фотографий")
+				}
+				l.GeneralLogger.Print("закончилось скачивание фотографий")
+				res.photos = photos
+			}
+		case <-wp.Done:
+			return *res
+		default:
+		}
+	}
+}
+
+func DownloadAll(folder string, album_url string, photo_url string) {
+	res := DownloadJson(album_url, photo_url)
+	wp := wpool.New(workerCount)
+
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
+
+	go wp.GenerateFrom(photosJobs(folder, &res))
 
 	go wp.Run(ctx)
 
@@ -98,57 +125,49 @@ func DownloadAll(album_url string, photos_url string, folder string) {
 			if !ok {
 				continue
 			}
-			fmt.Println(r)
+			i, err := strconv.ParseInt(string(r.Descriptor.ID), 10, 64)
+			if err != nil {
+				l.ErrorLogger.Fatalf("unexpected error: %v", err)
+			}
+			Create_folder(r.Descriptor.Metadata["albumPath"])
+			errWrite := ioutil.WriteFile(r.Descriptor.Metadata["photoPath"], r.Value, 0644)
+			if errWrite != nil {
+				l.ErrorLogger.Printf("Произошла ошибка сохранения %s", errWrite)
+			}
+			l.GeneralLogger.Printf("Выполенение задачи %v", i)
 		case <-wp.Done:
 			return
 		default:
 		}
 	}
-
 }
 
-var TestValue wpool.ExecutionFn = func(ctx context.Context, args interface{}) (interface{}, error) {
-	l.GeneralLogger.Println("Началось скачивание альбомов")
-	c := Context{AlbumStrategy{}}
-	task := Task{url: args}
-	return c.Download(task)
-}
+func photosJobs(folder string, res *Result) []wpool.Job {
+	jobs := make([]wpool.Job, 5000)
 
-func Get_album(ctx context.Context, args string) (Result, error) {
-	l.GeneralLogger.Println("Началось скачивание альбомов")
-	c := Context{AlbumStrategy{}}
-	task := Task{url: args}
-	return c.Download(task)
-}
-
-func Get_photos(ctx context.Context, args string) (Result, error) {
-	l.GeneralLogger.Println("Началось скачивание фоток")
-	c := Context{PhotoStrategy{}}
-	task := Task{url: args}
-	return c.Download(task)
-}
-
-func testJobs() []wpool.Job {
-	jobs := make([]wpool.Job, 2)
-	ctx := context.Background()
-
-	jobs[0] = wpool.Job{
-		Descriptor: wpool.JobDescriptor{
-			ID:       wpool.JobID(fmt.Sprintf("%v", 0)),
-			JType:    "Album",
-			Metadata: nil,
-		},
-		ExecFn: wpool.ExecutionFn(Get_album),
-		Args:   "https://jsonplaceholder.typicode.com/albums/",
+	var albumsDict map[int]models.Album
+	albumsDict = make(map[int]models.Album)
+	for _, i := range res.albums {
+		albumsDict[i.Id] = i
 	}
-	jobs[1] = wpool.Job{
-		Descriptor: wpool.JobDescriptor{
-			ID:       wpool.JobID(fmt.Sprintf("%v", 0)),
-			JType:    "Photo",
-			Metadata: nil,
-		},
-		ExecFn: Get_photos,
-		Args:   "https://jsonplaceholder.typicode.com/photos/",
+	for i, photo := range res.photos {
+		fmt.Print(photo)
+		albumTitle := albumsDict[photo.Albumid].Title
+		albumPath := filepath.Join(folder, albumTitle)
+		photoPath := filepath.Join(albumPath, photo.Title+".png")
+		jobs[i] = wpool.Job{
+			Descriptor: wpool.JobDescriptor{
+				ID:    wpool.JobID(fmt.Sprintf("%v", i)),
+				JType: "anyType",
+				Metadata: map[string]string{
+					"albumPath": albumPath,
+					"photoPath": photoPath,
+				},
+			},
+			ExecFn: Get,
+			Args:   photo.Url,
+		}
+
 	}
 	return jobs
 }

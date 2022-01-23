@@ -1,7 +1,6 @@
 package models
 
 import (
-	"download2json/internal/utils"
 	"encoding/json"
 )
 
@@ -35,17 +34,4 @@ func (c Photo) Serialize(data []byte) ([]Photo, error) {
 		return nil, err
 	}
 	return photos, nil
-}
-
-type PhotoFile struct {
-	Photo
-	Album
-}
-
-func (c *PhotoFile) Download() ([]byte, error) {
-	data, err := utils.Get(c.Url)
-	if err != nil {
-		return nil, err
-	}
-	return data, nil
 }
