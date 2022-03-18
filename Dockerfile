@@ -12,7 +12,7 @@ RUN go mod download
 COPY . /app
 
 # Build
-RUN go build  -o . ./...
+RUN go build -buildvcs=false  -o . ./...
 
 # Run
 CMD [ "./download2json" ]
