@@ -5,169 +5,164 @@ import (
 	l "download2json/internal/logger"
 	"download2json/internal/models"
 	"download2json/internal/wpool"
+	"errors"
 	"fmt"
-	"io"
 	"io/ioutil"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 )
 
-type Result struct {
-	albums []models.Album
-	photos []models.Photo
+type Photo struct {
+	url  string
+	path models.FilePath
 }
 
-func Create_folder(folder string) {
+func (c *Photo) Save() {
+
+}
+
+func Create_folder(folder string) error {
 	_, err := os.Stat(folder)
 	if os.IsNotExist(err) {
 		errDir := os.MkdirAll(folder, 0755)
 		if errDir != nil {
-			l.ErrorLogger.Fatalln(err)
+			return errDir
 		}
 	}
+	return nil
 }
 
-func Get(url string) ([]byte, error) {
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	return body, nil
-}
-
-const workerCount int = 100
+const workerCount int = 1000
 const jobsCount int = 100
 
-func DownloadJson(album_url string, photo_url string) Result {
-	wp := wpool.New(workerCount)
+func processingPhoto(ctx context.Context, args interface{}) (interface{}, error) {
+	photo, ok := args.(Photo)
+	if !ok {
+		l.ErrorLogger.Print("Unknown type parameter processingPhoto")
+		return "", NewErrorWrapper("processingPhoto", errors.New("Unknown type parameter processingPhoto"), "failed to convert type")
+	}
 
-	ctx, cancel := context.WithCancel(context.TODO())
+	var err error
+	raw, err := get(photo.url)
+	if err != nil {
+		return "", NewErrorWrapper("processingPhoto", err, fmt.Sprintf("Произошла ошибка при скачивании %s", photo.url))
+	}
+	err = Create_folder(photo.path.Folder)
+	if err != nil {
+		return "", NewErrorWrapper("processingPhoto", err, fmt.Sprintf("Произошла ошибка при создании каталога  %s", photo.path.Folder))
+	}
+	err = ioutil.WriteFile(photo.path.Path, raw, 0644)
+	if err != nil {
+		return "", NewErrorWrapper("processingPhoto", err, fmt.Sprintf("Произошла ошибка сохранения %s", photo.path.Path))
+	}
+	return fmt.Sprintf("Done processing %s", photo.url), nil
+}
+
+func get_albums_and_photos(ctx context.Context, album_url string, photos_url string) (map[int]models.Album, models.Photos, error) {
+	var err error
+	var albums models.Albums
+	var photos models.Photos
+
+	errorsCh := make(chan error)
+	albumsCh := make(chan []byte)
+	photosCh := make(chan []byte)
+
+	go Download(album_url, albumsCh, errorsCh)
+	l.GeneralLogger.Print("Start download albums")
+	go Download(photos_url, photosCh, errorsCh)
+	l.GeneralLogger.Print("Start download photos")
+
+	select {
+	case r := <-albumsCh:
+		albums, err = albums.Parse(r)
+		if err != nil {
+			return albums.AsDict(), photos, NewErrorWrapper("get_albums_and_photos", err, "failed to marshal json albums")
+		}
+		l.GeneralLogger.Print("Finished download albums")
+	case r := <-errorsCh:
+		return albums.AsDict(), photos, NewErrorWrapper("get_albums_and_photos", r, "failed to download")
+	case <-ctx.Done():
+		return albums.AsDict(), photos, NewErrorWrapper("get_albums_and_photos", ctx.Err(), "Context done")
+	}
+
+	select {
+	case r := <-photosCh:
+		photos, err = photos.Parse(r)
+		if err != nil {
+			return albums.AsDict(), photos, NewErrorWrapper("get_albums_and_photos", err, "failed to marshal json photos")
+		}
+		l.GeneralLogger.Print("Finished download photos")
+	case r := <-errorsCh:
+		return albums.AsDict(), photos, NewErrorWrapper("get_albums_and_photos", r, "failed to download")
+	case <-ctx.Done():
+		return albums.AsDict(), photos, NewErrorWrapper("get_albums_and_photos", ctx.Err(), "Context done")
+	}
+	return albums.AsDict(), photos, nil
+}
+
+func Core(album_url string, photos_url string, folder string) {
+	ctx := context.Background()
+
+	ctx, cancel := context.WithCancel(ctx)
+	// ctx, cancel = context.WithTimeout(ctx, time.Duration(150)*time.Millisecond) через 150 мс все горутины отменятся
 	defer cancel()
 
-	jobs := make([]wpool.Job, 2)
-	jobs[0] = wpool.Job{
-		Descriptor: wpool.JobDescriptor{
-			ID:       wpool.JobID(fmt.Sprintf("%v", 0)),
-			JType:    "Album",
-			Metadata: nil,
-		},
-		ExecFn: Get,
-		Args:   album_url,
+	albums, photos, _ := get_albums_and_photos(ctx, album_url, photos_url)
+
+	jobs := make([]wpool.Job, 5000)
+	for i, photo := range photos {
+		jobs[i] = wpool.Job{
+			Descriptor: wpool.JobDescriptor{
+				ID:       wpool.JobID(fmt.Sprintf("%v", i)),
+				JType:    "Download",
+				Metadata: nil,
+			},
+			ExecFn: wpool.ExecutionFn(processingPhoto),
+			Args: Photo{
+				url:  photo.Url,
+				path: buildPhotoPath(albums[photo.Albumid].Title, photo.Title, folder),
+			},
+		}
 	}
-	jobs[1] = wpool.Job{
-		Descriptor: wpool.JobDescriptor{
-			ID:       wpool.JobID(fmt.Sprintf("%v", 1)),
-			JType:    "Photo",
-			Metadata: nil,
-		},
-		ExecFn: Get,
-		Args:   photo_url,
-	}
+
+	wp := wpool.New(workerCount)
 
 	go wp.GenerateFrom(jobs)
 
 	go wp.Run(ctx)
 
-	res := new(Result)
-
 	for {
 		select {
 		case r, ok := <-wp.Results():
 			if !ok {
 				continue
 			}
-			if r.Descriptor.JType == "Album" {
-				var album models.Album
-				albums, err := album.Serialize(r.Value)
-				if err != nil {
-					l.ErrorLogger.Panicln("Ошибка при сериализации альбомов")
+			i, _ := strconv.ParseInt(string(r.Descriptor.ID), 10, 64)
+			if r.Err != nil {
+				var ew ErrorWrapper
+				if errors.As(r.Err, &ew) {
+					l.ErrorLogger.Print(ew.Message)
+					l.ErrorLogger.Print(ew.Context)
+					l.ErrorLogger.Print(ew.Err)
 				}
-				l.GeneralLogger.Print("закончилось скачивание альбомов")
-				res.albums = albums
+			} else {
+				l.GeneralLogger.Print(r.Value)
 			}
-			if r.Descriptor.JType == "Photo" {
-				var photo models.Photo
-				photos, err := photo.Serialize(r.Value)
-				if err != nil {
-					l.ErrorLogger.Panicln("Ошибка при сериализации фотографий")
-				}
-				l.GeneralLogger.Print("закончилось скачивание фотографий")
-				res.photos = photos
-			}
+			l.GeneralLogger.Printf("Task: %v finished", i)
 		case <-wp.Done:
-			return *res
-		default:
-		}
-	}
-}
-
-func DownloadAll(folder string, album_url string, photo_url string) {
-	res := DownloadJson(album_url, photo_url)
-	wp := wpool.New(workerCount)
-
-	ctx, cancel := context.WithCancel(context.TODO())
-	defer cancel()
-
-	go wp.GenerateFrom(photosJobs(folder, &res))
-
-	go wp.Run(ctx)
-
-	for {
-		select {
-		case r, ok := <-wp.Results():
-			if !ok {
-				continue
-			}
-			i, err := strconv.ParseInt(string(r.Descriptor.ID), 10, 64)
-			if err != nil {
-				l.ErrorLogger.Fatalf("unexpected error: %v", err)
-			}
-			Create_folder(r.Descriptor.Metadata["albumPath"])
-			errWrite := ioutil.WriteFile(r.Descriptor.Metadata["photoPath"], r.Value, 0644)
-			if errWrite != nil {
-				l.ErrorLogger.Printf("Произошла ошибка сохранения %s", errWrite)
-			}
-			l.GeneralLogger.Printf("Выполенение задачи %v", i)
-		case <-wp.Done:
+			l.GeneralLogger.Print("Done")
 			return
-		default:
 		}
 	}
+
 }
 
-func photosJobs(folder string, res *Result) []wpool.Job {
-	jobs := make([]wpool.Job, 5000)
-
-	var albumsDict map[int]models.Album
-	albumsDict = make(map[int]models.Album)
-	for _, i := range res.albums {
-		albumsDict[i.Id] = i
+func buildPhotoPath(albumTitle string, photoTitle string, folder string) models.FilePath {
+	albumPath := filepath.Join(folder, albumTitle)
+	photoPath := filepath.Join(albumPath, photoTitle+"."+models.PhotoExt) // вместо точки для винды нужно использовать / возможно можно подставить какой нибудь универсальный разделитель
+	return models.FilePath{
+		Path:   photoPath,
+		Folder: albumPath,
 	}
-	for i, photo := range res.photos {
-		fmt.Print(photo)
-		albumTitle := albumsDict[photo.Albumid].Title
-		albumPath := filepath.Join(folder, albumTitle)
-		photoPath := filepath.Join(albumPath, photo.Title+".png")
-		jobs[i] = wpool.Job{
-			Descriptor: wpool.JobDescriptor{
-				ID:    wpool.JobID(fmt.Sprintf("%v", i)),
-				JType: "anyType",
-				Metadata: map[string]string{
-					"albumPath": albumPath,
-					"photoPath": photoPath,
-				},
-			},
-			ExecFn: Get,
-			Args:   photo.Url,
-		}
-
-	}
-	return jobs
 }

@@ -4,19 +4,27 @@ import (
 	"encoding/json"
 )
 
+const PhotoExt string = "png"
+
 type Album struct {
 	Userid int    `json:"userId"`
 	Id     int    `json:"id"`
 	Title  string `json:"title"`
 }
 
-func (c Album) Serialize(data []byte) ([]Album, error) {
-	albums := []Album{}
-	err := json.Unmarshal(data, &albums)
-	if err != nil {
-		return nil, err
+type Albums []Album
+
+func (c Albums) Parse(data []byte) (Albums, error) {
+	albums := Albums{}
+	return albums, unmarshal(data, &albums)
+}
+
+func (c Albums) AsDict() map[int]Album {
+	albumsDict := make(map[int]Album)
+	for _, i := range c {
+		albumsDict[i.Id] = i
 	}
-	return albums, nil
+	return albumsDict
 }
 
 type Photo struct {
@@ -27,11 +35,22 @@ type Photo struct {
 	Thumbnailurl string `json:"thumbnailUrl"`
 }
 
-func (c Photo) Serialize(data []byte) ([]Photo, error) {
-	photos := []Photo{}
-	err := json.Unmarshal(data, &photos)
+type Photos []Photo
+
+func (c Photos) Parse(data []byte) (Photos, error) {
+	photos := Photos{}
+	return photos, unmarshal(data, &photos)
+}
+
+func unmarshal(data []byte, v interface{}) error {
+	err := json.Unmarshal(data, &v)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return photos, nil
+	return nil
+}
+
+type FilePath struct {
+	Path   string
+	Folder string
 }

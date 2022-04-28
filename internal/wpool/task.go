@@ -7,7 +7,7 @@ import (
 type JobID string
 type jobType string
 
-type ExecutionFn func(url string) ([]byte, error)
+type ExecutionFn func(ctx context.Context, args interface{}) (interface{}, error)
 
 type JobDescriptor struct {
 	ID       JobID
@@ -16,7 +16,7 @@ type JobDescriptor struct {
 }
 
 type Result struct {
-	Value      []byte
+	Value      interface{}
 	Err        error
 	Descriptor JobDescriptor
 }
@@ -24,11 +24,11 @@ type Result struct {
 type Job struct {
 	Descriptor JobDescriptor
 	ExecFn     ExecutionFn
-	Args       string
+	Args       interface{}
 }
 
 func (j Job) execute(ctx context.Context) Result {
-	value, err := j.ExecFn(j.Args)
+	value, err := j.ExecFn(ctx, j.Args)
 	if err != nil {
 		return Result{
 			Err:        err,
