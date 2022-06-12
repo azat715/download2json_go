@@ -23,3 +23,7 @@ internal/logger - логгер
 internal/models - модели для парсинга json
 
 internal/wpool - воркер пул
+
+## TODO 
+
+добавить тесты 
