@@ -110,7 +110,14 @@ func Core(album_url string, photos_url string, folder string) {
 	albums, photos, err := get_albums_and_photos(ctx, album_url, photos_url)
 
 	if err != nil {
-		panic(NewErrorWrapper("get_albums_and_photos", err, fmt.Sprintf("Произошла ошибка загрузки")))
+		err = (NewErrorWrapper("get_albums_and_photos", err, fmt.Sprintf("Произошла ошибка загрузки")))
+		var ew ErrorWrapper
+		if errors.As(err, &ew) {
+			l.ErrorLogger.Print(ew.Message)
+			l.ErrorLogger.Print(ew.Context)
+			panic(err)
+		}
+
 	}
 
 	jobs := make([]wpool.Job, 5000)
