@@ -13,13 +13,12 @@ import (
 	"strconv"
 )
 
+const workerCount int = 1000
+const jobsCount int = 100
+
 type Photo struct {
 	url  string
 	path models.FilePath
-}
-
-func (c *Photo) Save() {
-
 }
 
 func Create_folder(folder string) error {
@@ -29,12 +28,11 @@ func Create_folder(folder string) error {
 		if errDir != nil {
 			return errDir
 		}
+	} else {
+		return err
 	}
 	return nil
 }
-
-const workerCount int = 1000
-const jobsCount int = 100
 
 func processingPhoto(ctx context.Context, args interface{}) (interface{}, error) {
 	photo, ok := args.(Photo)
@@ -98,6 +96,7 @@ func get_albums_and_photos(ctx context.Context, album_url string, photos_url str
 	case <-ctx.Done():
 		return albums.AsDict(), photos, NewErrorWrapper("get_albums_and_photos", ctx.Err(), "Context done")
 	}
+
 	return albums.AsDict(), photos, nil
 }
 
@@ -108,7 +107,11 @@ func Core(album_url string, photos_url string, folder string) {
 	// ctx, cancel = context.WithTimeout(ctx, time.Duration(150)*time.Millisecond) через 150 мс все горутины отменятся
 	defer cancel()
 
-	albums, photos, _ := get_albums_and_photos(ctx, album_url, photos_url)
+	albums, photos, err := get_albums_and_photos(ctx, album_url, photos_url)
+
+	if err != nil {
+		panic(NewErrorWrapper("get_albums_and_photos", err, fmt.Sprintf("Произошла ошибка загрузки")))
+	}
 
 	jobs := make([]wpool.Job, 5000)
 	for i, photo := range photos {

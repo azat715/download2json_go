@@ -14,7 +14,6 @@ func worker(ctx context.Context, wg *sync.WaitGroup, jobs <-chan Job, results ch
 			if !ok {
 				return
 			}
-			// fan-in job execution multiplexing results into the results channel
 			results <- job.execute(ctx)
 		case <-ctx.Done():
 			fmt.Printf("cancelled worker. Error detail: %v\n", ctx.Err())
@@ -47,9 +46,6 @@ func (wp WorkerPool) Run(ctx context.Context) {
 
 	for i := 0; i < wp.workersCount; i++ {
 		wg.Add(1)
-		// fan out worker goroutines
-		//reading from jobs channel and
-		//pushing calcs into results channel
 		go worker(ctx, &wg, wp.jobs, wp.results)
 	}
 

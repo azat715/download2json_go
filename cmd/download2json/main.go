@@ -5,7 +5,7 @@ import (
 	l "download2json/internal/logger"
 )
 
-const FOLDER string = "albums"
+const FOLDER string = "/albums"
 const ALBUM_URL string = "https://jsonplaceholder.typicode.com/albums/"
 const PHOTOS_URL string = "https://jsonplaceholder.typicode.com/photos/"
 
