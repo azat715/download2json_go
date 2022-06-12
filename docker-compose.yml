@@ -1,0 +1,11 @@
+version: "3"
+
+services:
+  downloader2json:
+    build: .
+
+    volumes:
+      - downloaded_data:/albums
+
+volumes:
+  downloaded_data: null

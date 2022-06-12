@@ -1,18 +1,31 @@
+# downloader2json
+
+## Общий функционал
+
+Загрузка фотографий с сайта https://jsonplaceholder.typicode.com
+
+## Запуск
 
 ```bash
-# билд 
-go build  -o . ./...
-# запуск 
-./download2json
-
-# билд в докере
-docker build -t godownloader2json .
-# запуск в докере
-docker run godownloader2json
+docker-compose up
 ```
 
+## Основные технологии
 
-Реализовать парсер с сайта https://jsonplaceholder.typicode.com/ в несколько потоков объекты albums/ и photos/.
-https://jsonplaceholder.typicode.com/albums/
-https://jsonplaceholder.typicode.com/photos/
-Скачиваем все альбомы и фотографии, кладем их по папкам /альбом/название_фотографии
+Использован паттерн Worker pool
+
+## Структура приложения
+
+internal/core - основная логика скрипта, враппер для errors
+
+internal/logger - логгер
+
+internal/models - модели для парсинга json
+
+internal/wpool - воркер пул
+
+## TODO 
+
+добавить тесты
+
+урлы добавить в env
