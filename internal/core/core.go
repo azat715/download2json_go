@@ -66,6 +66,8 @@ func get_albums_and_photos(ctx context.Context, album_url string, photos_url str
 	albumsCh := make(chan []byte)
 	photosCh := make(chan []byte)
 
+	// переделать на  golang.org/x/sync/errgroup
+
 	go Download(album_url, albumsCh, errorsCh)
 	l.GeneralLogger.Print("Start download albums")
 	go Download(photos_url, photosCh, errorsCh)
@@ -96,6 +98,9 @@ func get_albums_and_photos(ctx context.Context, album_url string, photos_url str
 	case <-ctx.Done():
 		return albums.AsDict(), photos, NewErrorWrapper("get_albums_and_photos", ctx.Err(), "Context done")
 	}
+	defer close(errorsCh)
+	defer close(albumsCh)
+	defer close(photosCh)
 
 	return albums.AsDict(), photos, nil
 }
