@@ -16,16 +16,12 @@ docker-compose up
 
 ## Структура приложения
 
-internal/core - основная логика скрипта, враппер для errors
-
-internal/logger - логгер
-
-internal/models - модели для парсинга json
-
-internal/wpool - воркер пул
+- internal/core - основная логика скрипта, враппер для errors
+- internal/logger - логгер
+- internal/models - модели для парсинга json
+- internal/wpool - воркер пул
 
 ## TODO 
 
-добавить тесты
-
-урлы добавить в env
+- добавить тесты
+- урлы добавить в env
